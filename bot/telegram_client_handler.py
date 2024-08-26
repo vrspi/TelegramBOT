@@ -1,10 +1,12 @@
 import logging
 import asyncio
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, errors
 from PySide6.QtCore import QThread, Signal
 from services.mt5_service import MT5Service
 from services.together_client import TogetherClient
 import json5
+import traceback
+from requests.exceptions import ConnectionError as RequestsConnectionError
 
 class TelegramClientHandler(QThread):
     log_signal = Signal(str)
@@ -18,88 +20,273 @@ class TelegramClientHandler(QThread):
         self.mt5_service = mt5_service
         self.together_client = together_client
         self.client = None
-        self.opened_trades = []  # To handle multiple trades
+        self.opened_trades = []
 
-    def run(self):
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        self.client = TelegramClient('session_name', self.api_id, self.api_hash)
-        loop.run_until_complete(self.start_client())
+    async def run(self):
+        while True:
+            try:
+                loop = asyncio.get_event_loop()
+                self.client = TelegramClient('session_name', self.api_id, self.api_hash)
+                await self.start_client()
+            except (RequestsConnectionError, errors.ServerError) as e:
+                logging.error(f"Connection error: {e}")
+                await asyncio.sleep(60)  # Wait before retrying
+            except Exception as e:
+                logging.error(f"Unexpected error in run method: {e}", exc_info=True)
+                await asyncio.sleep(60)  # Wait before retrying
+            finally:
+                logging.info("Restarting Telegram client handler...")
 
     async def start_client(self):
-        await self.client.start()
-        logging.info(f"Listening for messages in channel ID: {self.source_channel_id}")
-        self.client.add_event_handler(self.handler, events.NewMessage(chats=int(self.source_channel_id)))
-        logging.info("Telegram client started. Listening for new messages...")
-        await self.client.run_until_disconnected()
+        max_retries = 5
+        retry_delay = 60  # seconds
+
+        for attempt in range(max_retries):
+            try:
+                await self.client.start()
+                logging.info(f"Listening for messages in channel ID: {self.source_channel_id}")
+                self.client.add_event_handler(self.handler, events.NewMessage(chats=int(self.source_channel_id)))
+                logging.info("Telegram client started. Listening for new messages...")
+                await self.client.run_until_disconnected()
+            except (RequestsConnectionError, errors.ServerError) as e:
+                logging.error(f"Connection error (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logging.error("Max retries reached. Exiting.")
+                    raise
+            except Exception as e:
+                logging.error(f"Unexpected error in start_client: {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logging.error("Max retries reached. Exiting.")
+                    raise
 
     async def handler(self, event):
-        message_content = event.message.message
-        if not message_content:
-            return
-        logging.info(f"Received message: {message_content}")
-
         try:
-            if "sell" in message_content.lower() or "buy" in message_content.lower():
-                await self.handle_trade(message_content)
-            elif any(keyword in message_content.lower() for keyword in ["breakeven", "set breakeven", "secure"]):
-                await self.handle_breakeven()
-            else:
-                logging.info(f"General message received: {message_content}")
+            message_content = event.message.message
+            if not message_content:
+                return
+            logging.info(f"Received message: {message_content}")
+
+            await self.process_message(message_content)
         except Exception as e:
-            logging.error(f"Failed to process message: {e}")
+            logging.error(f"Error in handler: {e}", exc_info=True)
 
-    async def handle_trade(self, message_content):
-        if "now" in message_content.lower():
-            await self.open_trades(message_content)
-        elif any(keyword in message_content.lower() for keyword in ["tp", "sl", "take profit"]):
-            await self.update_trades(message_content)
+    async def process_message(self, message_content):
+        try:
+            logging.info(f"Starting to process message: {message_content}")
+            analysis = await self.analyze_message(message_content)
+            
+            logging.info(f"Analysis result: {analysis}")
+            
+            if analysis['action'] is None:
+                logging.info(f"Non-actionable message received and processed: {message_content}")
+                logging.info("Waiting for next message...")
+                return
 
-    async def open_trades(self, message_content):
+            logging.info(f"Proceeding with action: {analysis['action']}")
+
+            if analysis['action'] == 'open_trade':
+                await self.synchronize_trades(analysis['symbol'])
+                if self.opened_trades:
+                    await self.adjust_existing_trades(analysis)
+                else:
+                    await self.open_trades(analysis)
+            elif analysis['action'] == 'update_trade':
+                await self.update_trades(analysis)
+            elif analysis['action'] == 'breakeven':
+                await self.handle_breakeven()
+            elif analysis['action'] == 'close_trade':
+                await self.close_trades(analysis)
+            else:
+                logging.info(f"Unrecognized action in message: {message_content}")
+        except Exception as e:
+            logging.error(f"Error processing message: {e}", exc_info=True)
+        finally:
+            logging.info("Message processing complete. Waiting for next message...")
+
+    async def adjust_existing_trades(self, analysis):
+        if not self.opened_trades:
+            logging.info("No trades to adjust.")
+            return
+
+        logging.info(f"Adjusting existing trades with fixed 300 pips SL and 1100 pips TP")
+
+        for trade_ticket in self.opened_trades:
+            trade = self.mt5_service.get_open_position(trade_ticket)
+            if trade is None:
+                logging.error(f"Failed to retrieve trade information for ticket {trade_ticket}")
+                continue
+
+            current_price = self.mt5_service.get_current_price(trade.symbol)
+            logging.info(f"Attempting to adjust trade {trade_ticket}. Current price: {current_price}, Current SL: {trade.sl}, Current TP: {trade.tp}")
+            result = self.mt5_service.modify_position(trade_ticket)
+
+            if result is None:
+                logging.error(f"Failed to adjust trade {trade_ticket}: No result returned")
+            elif result.retcode == self.mt5_service.TRADE_RETCODE_DONE:
+                # Get the updated position to log the new SL and TP
+                updated_trade = self.mt5_service.get_open_position(trade_ticket)
+                if updated_trade:
+                    logging.info(f"Trade {trade_ticket} adjusted successfully. New SL: {updated_trade.sl}, New TP: {updated_trade.tp}")
+                else:
+                    logging.info(f"Trade {trade_ticket} adjusted successfully, but couldn't retrieve updated values.")
+            else:
+                logging.error(f"Failed to adjust trade {trade_ticket}: {result.comment}")
+
+    async def analyze_message(self, message_content):
+            max_retries = 3
+            retry_delay = 5  # seconds
+
+            for attempt in range(max_retries):
+                try:
+                    prompt = self.generate_analysis_prompt(message_content)
+                    logging.info(f"Sending prompt to Together API: {prompt}")
+                    
+                    response = self.together_client.chat_completion(prompt)
+                    logging.info(f"Received raw response from Together API: {response}")
+                    
+                    if response is None:
+                        logging.info("Failed to get a valid response from Together API.")
+                        return {'action': None}
+
+                    logging.info(f"Response object type: {type(response)}")
+                    logging.info(f"Response attributes: {dir(response)}")
+
+                    if not hasattr(response, 'choices') or not response.choices:
+                        logging.error("Response does not have 'choices' attribute or it's empty")
+                        return {'action': None}
+
+                    raw_response = response.choices[0].message.content.strip()
+                    logging.info(f"Raw response content: {raw_response}")
+                    
+                    clean_response = raw_response.strip().strip('```')
+                    logging.info(f"Cleaned AI Response: {clean_response}")
+
+                    try:
+                        parsed_response = json5.loads(clean_response)
+                        logging.info(f"Parsed JSON response: {parsed_response}")
+                        # Ensure that 'action' is always present in the response
+                        if 'action' not in parsed_response:
+                            parsed_response['action'] = None
+                        return parsed_response
+                    except ValueError as e:
+                        logging.error(f"Failed to decode JSON5: {e} - Cleaned Response: {clean_response}")
+                        return {'action': None}
+                except Exception as e:
+                    logging.error(f"Error in analyze_message (attempt {attempt + 1}/{max_retries}): {e}", exc_info=True)
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(retry_delay)
+                    else:
+                        logging.error("Max retries reached. Returning None.")
+                        return {'action': None}
+
+    def generate_analysis_prompt(self, message_content):
+        return (
+            "(YOU SPEAK ONLY JSON) You are an expert trading assistant. Analyze the following message and extract key information. "
+            "Respond with a JSON object containing the following fields:\n"
+            "- action: 'open_trade', 'update_trade', 'breakeven', 'close_trade', or 'After Trade'\n"
+                "- symbol: the trading symbol (XAUUSD.sml)\n"
+                "- direction: 'buy' or 'sell'\n"
+                "- entry: entry price or price range (can be a single number or an object with 'min' and 'max')\n"
+                "- stop_loss: stop loss price\n"
+                "- take_profit: take profit price(s) (can be a single number, an array, or an object with 'tp1', 'tp2', etc.)\n"
+                "- comment: any additional information\n\n"
+                f"Message:\n{message_content}\n"
+            )
+
+    async def open_trades(self, analysis):
         if self.opened_trades:
             logging.info("Trades are already open. New trades will not be executed.")
             return
 
-        # Here, we open four trades each with 0.02 lot size.
-        action = "sell" if "sell" in message_content.lower() else "buy"
-        symbol = "XAUUSD"  # Assuming "Gold" corresponds to "XAUUSD"
-        volume = 0.02
-        possible_symbols = ["GOLD", "XAUUSD", "GC", "GOLDUSD", "XAUUSD.sml", "Gold", "XAUUSD.sml"]
+        symbol_info = self.get_symbol_info(analysis['symbol'])
+        if not symbol_info:
+            logging.error(f"Failed to get symbol info for {analysis['symbol']}")
+            return
+
+        current_price = symbol_info.ask if analysis['direction'] == "buy" else symbol_info.bid
+
+        logging.info(f"Attempting to open {analysis['direction']} trade for {symbol_info.name} at {current_price}")
+
+        for i in range(4):
+            result = self.execute_trade(analysis['direction'], symbol_info.name, current_price)
+            if result:
+                self.opened_trades.append(result.order)  # Store the trade ticket
+                logging.info(f"Trade {i+1}/4: {analysis['direction']} {symbol_info.name} executed successfully at {current_price}.")
+            else:
+                logging.warning(f"Trade {i+1}/4: Failed to execute trade. Check if auto-trading is enabled in MetaTrader 5.")
+
+        if not self.opened_trades:
+            logging.error("No trades were opened. Please check your MetaTrader 5 settings and ensure auto-trading is enabled.")
+        else:
+            logging.info(f"Successfully opened {len(self.opened_trades)} out of 4 attempted trades.")
+
+    def get_symbol_info(self, symbol):
+        possible_symbols = [symbol, f"{symbol}.sml", symbol.upper()]
         symbol_info = next((self.mt5_service.get_symbol_info(s) for s in possible_symbols if self.mt5_service.get_symbol_info(s)), None)
 
         if not symbol_info:
-            logging.info(f"Failed to get symbol info for Gold. Tried symbols: {', '.join(possible_symbols)}")
-            return
+            logging.info(f"Failed to get symbol info for {symbol}. Tried symbols: {', '.join(possible_symbols)}")
+        return symbol_info
 
-        current_price = symbol_info.ask if action == "buy" else symbol_info.bid
+    def execute_trade(self, action, symbol, price):
+        request = {
+            "action": self.mt5_service.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": 0.02,
+            "type": self.mt5_service.ORDER_TYPE_BUY if action == "buy" else self.mt5_service.ORDER_TYPE_SELL,
+            "price": price,
+            "magic": 234000,
+            "comment": f"Auto trade: {action}",
+            "type_time": self.mt5_service.ORDER_TIME_GTC
+        }
+        result = self.mt5_service.send_order(request)
+        if result is None:
+            logging.error("Failed to execute trade: No result returned")
+            return None
+        if result.retcode != self.mt5_service.TRADE_RETCODE_DONE:
+            logging.error(f"Failed to execute trade: {result.comment} (retcode: {result.retcode})")
+            return None
+        return result
 
-        for _ in range(4):
-            request = {
-                "action": self.mt5_service.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": volume,
-                "type": self.mt5_service.ORDER_TYPE_BUY if action == "buy" else self.mt5_service.ORDER_TYPE_SELL,
-                "price": current_price,
-                "magic": 234000,
-                "comment": f"Auto trade: {action}",
-                "type_time": self.mt5_service.ORDER_TIME_GTC
-            }
-
-            result = self.mt5_service.send_order(request)
-
-            if result and result.retcode == self.mt5_service.TRADE_RETCODE_DONE:
-                self.opened_trades.append(result.order)
-                logging.info(f"Trade {action} {symbol} executed successfully at {current_price}.")
-            else:
-                logging.info(f"Failed to execute trade: {result.comment}")
-
-    async def update_trades(self, message_content):
+    async def update_trades(self, analysis):
         if not self.opened_trades:
             logging.info("No trades to update.")
             return
 
-        # Parse the incoming message for SL and TP updates
-        prompt = (
+        trade_data = await self.parse_trade_data(analysis)
+        if not trade_data:
+            return
+
+        sl = trade_data.get("stop_loss")
+        tp = trade_data.get("take_profit")
+        tp1, tp2 = self.parse_take_profit(tp)
+
+        for trade in self.opened_trades:
+            self.update_trade_sl_tp(trade, sl, tp1, tp2)
+
+    async def parse_trade_data(self, analysis):
+        prompt = self.generate_ai_prompt(analysis)
+        response = self.together_client.chat_completion(prompt)
+        if response is None:
+            logging.info("Failed to get a valid response from Together API.")
+            return None
+
+        raw_response = response.choices[0].message.content.strip()
+        clean_response = raw_response.strip().strip('```')
+        logging.info(f"Cleaned AI Response: {clean_response}")
+
+        try:
+            return json5.loads(clean_response)
+        except ValueError as e:
+            logging.info(f"Failed to decode JSON5: {e} - Cleaned Response: {clean_response}")
+            return None
+
+    def generate_ai_prompt(self, analysis):
+        return (
             "You are a JSON writer expert. You will receive messages about trading and your role is to extract the key information and "
             "structure it into a JSON format (YOU SPEAK ONLY JSON).\n\n"
             "Here's how the JSON structure should look:\n\n"
@@ -115,105 +302,149 @@ class TelegramClientHandler(QThread):
             "  \"stop_loss\": [\"float\", \"null\"],\n"
             "  \"comment\": \"string\"\n"
             "}\n\n"
-            "Message:\n"
-            f"{message_content}\n"
+            f"Message:\n{analysis}\n"
         )
 
-        response = self.together_client.chat_completion(prompt)
-        if response is None:
-            logging.info("Failed to get a valid response from Together API.")
-            return
+    def parse_take_profit(self, tp):
+        if isinstance(tp, list):
+            return tp if len(tp) >= 2 else (tp[0], None)
+        return tp, None
 
-        raw_response = response.choices[0].message.content.strip()
-        logging.info(f"Raw AI Response: `{raw_response}`")
+    def update_trade_sl_tp(self, trade, sl, tp1, tp2):
+        request = {
+            "action": self.mt5_service.TRADE_ACTION_SLTP,
+            "symbol": trade.symbol,
+            "volume": trade.volume,
+            "type": trade.type,
+            "position": trade.ticket,
+            "sl": sl,
+            "tp": tp1 if trade.volume == 0.02 else tp2,
+            "deviation": 20,
+            "magic": 234000,
+            "comment": "Update SL/TP",
+        }
 
-        if not raw_response:
-            logging.info("The AI response was empty. Skipping JSON5 parsing.")
-            return
+        result = self.mt5_service.send_order(request)
 
-        clean_response = raw_response.strip().strip('```')
-        logging.info(f"Cleaned AI Response: {clean_response}")
-
-        try:
-            trade_data = json5.loads(clean_response)
-            sl = trade_data.get("stop_loss")
-            tp = trade_data.get("take_profit")
-
-            if isinstance(tp, list):
-                tp1, tp2 = tp if len(tp) >= 2 else (tp[0], None)
-            else:
-                tp1, tp2 = tp, None
-
-            for trade in self.opened_trades:
-                request = {
-                    "action": self.mt5_service.TRADE_ACTION_SLTP,
-                    "symbol": trade.symbol,
-                    "volume": trade.volume,
-                    "type": trade.type,
-                    "position": trade.ticket,
-                    "sl": sl,
-                    "tp": tp1 if trade.volume == 0.02 else tp2,
-                    "deviation": 20,
-                    "magic": 234000,
-                    "comment": "Update SL/TP",
-                }
-
-                result = self.mt5_service.send_order(request)
-
-                if result and result.retcode == self.mt5_service.TRADE_RETCODE_DONE:
-                    logging.info(f"Trade updated successfully with SL/TP for {trade.symbol}.")
-                else:
-                    logging.info(f"Failed to update trade: {result.comment}")
-
-        except ValueError as e:
-            logging.info(f"Failed to decode JSON5: {e} - Cleaned Response: {clean_response}")
+        if result and result.retcode == self.mt5_service.TRADE_RETCODE_DONE:
+            logging.info(f"Trade updated successfully with SL/TP for {trade.symbol}.")
+        else:
+            logging.info(f"Failed to update trade: {result.comment}")
 
     async def handle_breakeven(self):
         if not self.opened_trades:
             logging.info("No trades to adjust for breakeven.")
             return
 
+        logging.info("Handling breakeven...")
+        
+        # If there are 2 or fewer trades, close all of them
+        if len(self.opened_trades) <= 2:
+            logging.info(f"Only {len(self.opened_trades)} trade(s) open. Closing all trades.")
+            for trade_ticket in self.opened_trades.copy():  # Use copy to avoid modifying list while iterating
+                trade = self.mt5_service.get_open_position(trade_ticket)
+                if trade is None:
+                    logging.error(f"Failed to retrieve trade information for ticket {trade_ticket}")
+                    continue
+
+                result = self.mt5_service.close_position(trade_ticket, trade.volume)
+
+                if result and result.retcode == self.mt5_service.TRADE_RETCODE_DONE:
+                    self.opened_trades.remove(trade_ticket)
+                    logging.info(f"Trade closed successfully for breakeven: {trade.symbol}.")
+                else:
+                    logging.error(f"Failed to close trade for breakeven: {result.comment if result else 'Unknown error'}")
+            return  # Exit the method after closing all trades
+
+        # If more than 2 trades are open, proceed with the breakeven logic
         half_trades_to_close = self.opened_trades[:len(self.opened_trades) // 2]
         half_trades_to_update = self.opened_trades[len(self.opened_trades) // 2:]
 
         # Close half of the trades
-        for trade in half_trades_to_close:
+        for trade_ticket in half_trades_to_close:
+            trade = self.mt5_service.get_open_position(trade_ticket)
+            if trade is None:
+                logging.error(f"Failed to retrieve trade information for ticket {trade_ticket}")
+                continue
+
+            result = self.mt5_service.close_position(trade_ticket, trade.volume)
+
+            if result and result.retcode == self.mt5_service.TRADE_RETCODE_DONE:
+                self.opened_trades.remove(trade_ticket)
+                logging.info(f"Trade closed successfully for breakeven: {trade.symbol}.")
+            else:
+                logging.error(f"Failed to close trade for breakeven: {result.comment if result else 'Unknown error'}")
+
+        # Calculate breakeven price for remaining trades
+        remaining_trades = [self.mt5_service.get_open_position(ticket) for ticket in half_trades_to_update]
+        remaining_trades = [trade for trade in remaining_trades if trade is not None]
+        
+        if not remaining_trades:
+            logging.error("No remaining trades to set breakeven.")
+            return
+
+        total_volume = sum(trade.volume for trade in remaining_trades)
+        weighted_price_sum = sum(trade.price_open * trade.volume for trade in remaining_trades)
+        breakeven_price = weighted_price_sum / total_volume
+
+        logging.info(f"Calculated breakeven price: {breakeven_price}")
+
+        # Update remaining trades with breakeven stop loss
+        for trade in remaining_trades:
+            current_price = self.mt5_service.get_current_price(trade.symbol)
+            if current_price is None:
+                logging.error(f"Failed to get current price for {trade.symbol}")
+                continue
+
+            symbol_info = self.mt5_service.get_symbol_info(trade.symbol)
+            if symbol_info is None:
+                logging.error(f"Failed to get symbol info for {trade.symbol}")
+                continue
+
+            # Add a small buffer to the breakeven price to avoid immediate stop-out
+            buffer_pips = 5  # You can adjust this value
+            buffer_price = buffer_pips * symbol_info.point
+
+            if trade.type == self.mt5_service.ORDER_TYPE_BUY:
+                breakeven_sl = breakeven_price - buffer_price
+            else:  # SELL order
+                breakeven_sl = breakeven_price + buffer_price
+
+            result = self.mt5_service.modify_position(trade.ticket, sl=breakeven_sl)
+
+            if result and result.retcode == self.mt5_service.TRADE_RETCODE_DONE:
+                logging.info(f"Trade {trade.ticket} updated to breakeven. New SL: {breakeven_sl}")
+            else:
+                logging.error(f"Failed to set breakeven for trade {trade.ticket}: {result.comment if result else 'Unknown error'}")
+
+            logging.info(f"Trade {trade.ticket} - Current price: {current_price}, Breakeven price: {breakeven_price}, New SL: {breakeven_sl}")
+
+    async def close_trades(self, analysis):
+        if not self.opened_trades:
+            logging.info("No trades to close.")
+            return
+
+        for trade in self.opened_trades:
             request = {
                 "action": self.mt5_service.TRADE_ACTION_DEAL,
                 "symbol": trade.symbol,
                 "volume": trade.volume,
-                "type": trade.type,
+                "type": self.mt5_service.ORDER_TYPE_SELL if trade.type == self.mt5_service.ORDER_TYPE_BUY else self.mt5_service.ORDER_TYPE_BUY,
                 "position": trade.ticket,
                 "deviation": 20,
                 "magic": 234000,
-                "comment": "Breakeven close half",
+                "comment": "Close trade",
             }
 
             result = self.mt5_service.send_order(request)
 
             if result and result.retcode == self.mt5_service.TRADE_RETCODE_DONE:
                 self.opened_trades.remove(trade)
-                logging.info(f"Trade closed successfully for breakeven: {trade.symbol}.")
+                logging.info(f"Trade closed successfully: {trade.symbol}.")
             else:
-                logging.info(f"Failed to close trade for breakeven: {result.comment}")
+                logging.info(f"Failed to close trade: {result.comment}")
 
-        # Set breakeven (adjust stop loss) for the remaining trades
-        for trade in half_trades_to_update:
-            request = {
-                "action": self.mt5_service.TRADE_ACTION_SLTP,
-                "symbol": trade.symbol,
-                "volume": trade.volume,
-                "type": trade.type,
-                "position": trade.ticket,
-                "sl": trade.price_open,  # Set stop loss to breakeven (entry price)
-                "deviation": 20,
-                "magic": 234000,
-                "comment": "Set breakeven",
-            }
-
-            result = self.mt5_service.send_order(request)
-
-            if result and result.retcode == self.mt5_service.TRADE_RETCODE_DONE:
-                logging.info(f"Trade updated to breakeven for {trade.symbol}.")
-            else:
-                logging.info(f"Failed to set breakeven for trade: {result.comment}")
+    async def synchronize_trades(self, symbol):
+        mt5_open_trades = self.mt5_service.get_open_positions(symbol)
+        self.opened_trades = [trade for trade in self.opened_trades if trade in mt5_open_trades]
+        logging.info(f"Synchronized trades for {symbol}. Current open trades: {self.opened_trades}")
