@@ -1,36 +1,44 @@
 import logging
 import asyncio
-from telethon import TelegramClient, events, errors
-from PySide6.QtCore import QThread, Signal
+from telethon import TelegramClient, events
+from PySide6.QtCore import QObject, Signal, Slot
 from services.mt5_service import MT5Service
 from services.together_client import TogetherClient
 import json5
 import traceback
-from requests.exceptions import ConnectionError as RequestsConnectionError
+import threading
 
-class TelegramClientHandler(QThread):
+class TelegramClientHandler(QObject):
     log_signal = Signal(str)
 
-    def __init__(self, api_id, api_hash, source_channel_id, destination_chat_id, mt5_service: MT5Service, together_client: TogetherClient):
+    def __init__(self, api_id, api_hash, phone_number, source_channel_id, mt5_service: MT5Service, together_client: TogetherClient):
         super().__init__()
         self.api_id = api_id
         self.api_hash = api_hash
+        self.phone_number = phone_number
         self.source_channel_id = source_channel_id
-        self.destination_chat_id = destination_chat_id
         self.mt5_service = mt5_service
         self.together_client = together_client
         self.client = None
         self.opened_trades = []
+        self.loop = None
+        self.thread = None
+
+    @Slot()
+    def start(self):
+        self.thread = threading.Thread(target=self.run_async_loop, daemon=True)
+        self.thread.start()
+
+    def run_async_loop(self):
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_until_complete(self.run())
 
     async def run(self):
         while True:
             try:
-                loop = asyncio.get_event_loop()
-                self.client = TelegramClient('session_name', self.api_id, self.api_hash)
+                self.client = TelegramClient('session', self.api_id, self.api_hash, loop=self.loop)
                 await self.start_client()
-            except (RequestsConnectionError, errors.ServerError) as e:
-                logging.error(f"Connection error: {e}")
-                await asyncio.sleep(60)  # Wait before retrying
             except Exception as e:
                 logging.error(f"Unexpected error in run method: {e}", exc_info=True)
                 await asyncio.sleep(60)  # Wait before retrying
@@ -38,30 +46,11 @@ class TelegramClientHandler(QThread):
                 logging.info("Restarting Telegram client handler...")
 
     async def start_client(self):
-        max_retries = 5
-        retry_delay = 60  # seconds
-
-        for attempt in range(max_retries):
-            try:
-                await self.client.start()
-                logging.info(f"Listening for messages in channel ID: {self.source_channel_id}")
-                self.client.add_event_handler(self.handler, events.NewMessage(chats=int(self.source_channel_id)))
-                logging.info("Telegram client started. Listening for new messages...")
-                await self.client.run_until_disconnected()
-            except (RequestsConnectionError, errors.ServerError) as e:
-                logging.error(f"Connection error (attempt {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-                else:
-                    logging.error("Max retries reached. Exiting.")
-                    raise
-            except Exception as e:
-                logging.error(f"Unexpected error in start_client: {e}", exc_info=True)
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-                else:
-                    logging.error("Max retries reached. Exiting.")
-                    raise
+        await self.client.start(phone=self.phone_number)
+        logging.info(f"Listening for messages in channel ID: {self.source_channel_id}")
+        self.client.add_event_handler(self.handler, events.NewMessage(chats=int(self.source_channel_id)))
+        logging.info("Telegram client started. Listening for new messages...")
+        await self.client.run_until_disconnected()
 
     async def handler(self, event):
         try:
