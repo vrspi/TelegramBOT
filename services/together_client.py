@@ -1,32 +1,40 @@
-from together import Together
 import logging
+import os
+from together import Together
+from typing import Optional, Any
 
 class TogetherClient:
-    def __init__(self, api_key):
+    def __init__(self, api_key: str):
+        """Initialize the Together AI client."""
+        os.environ['TOGETHER_API_KEY'] = api_key
         self.client = Together(api_key=api_key)
-
-    def chat_completion(self, prompt):
+        self.model = "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo"
+        
+    def chat_completion(self, prompt: str) -> Optional[Any]:
+        """Send a chat completion request to Together AI."""
         try:
-            logging.info(f"Sending prompt to Together API: {prompt}")
-            response = self.client.chat.completions.create(
-                model="meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo",
-                messages=[{"role": "system", "content": prompt}],
-                max_tokens=512,
-                temperature=0.7,
-                top_p=0.7,
-                top_k=50,
-                repetition_penalty=1,
-                stop=["<|eot_id|>","<|eom_id|>"]
-            # This causes the response to be streamed as a generator
-            )
-
-            logging.info(f"Received response from Together API: {response}")
+            # Log prompt without Unicode characters
+            safe_prompt = prompt.encode('ascii', errors='replace').decode()
+            logging.info(f"Sending prompt to Together API: {safe_prompt}")
             
-            if not response or not response.choices or not response.choices[0].message.content:
-                logging.warning("Received an empty or invalid response from Together API.")
-                return None
-
+            # Make the API call using the chat completions endpoint
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an expert trading assistant specializing in XAUUSD (Gold) trading signals."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,  # Lower temperature for more focused responses
+                max_tokens=1024
+            )
+            
+            # Log the response safely
+            if response:
+                safe_response = str(response).encode('ascii', errors='replace').decode()
+                logging.info(f"Received response from Together API: {safe_response}")
+            
             return response
+            
         except Exception as e:
-            logging.error(f"Failed to get completion from Together API: {e}")
+            logging.error(f"Error in Together API call: {str(e)}", exc_info=True)
             return None
