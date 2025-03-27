@@ -1842,3 +1842,73 @@ Return your response in this JSON format:
 2024-12-09 02:32:40,432 - root - INFO - Risk Assessment: Considering the current market conditions and account status, the risk of this trade seems manageable. The stop loss is set at 2704, which is about 55 pips away from the current market price, and the take profit levels are about 54-58 pips away. With a free margin of $95.46 and a margin level of 3303.36%, the account appears to have sufficient funds to withstand potential losses.
 2024-12-09 02:34:07,048 - GUI - INFO - Shutting down application...
 2024-12-09 02:34:07,093 - root - INFO - Application shutdown complete.
+2024-12-09 16:48:40,623 - root - INFO - Starting Trading Bot application...
+2024-12-09 16:48:41,015 - telethon.network.mtprotosender - INFO - Connecting to 149.154.167.91:443/TcpFull...
+2024-12-09 16:48:41,158 - telethon.network.mtprotosender - INFO - Connection to 149.154.167.91:443/TcpFull complete!
+2024-12-09 16:48:41,352 - telethon.network.mtprotosender - INFO - System clock is wrong, set time offset to -3799s
+2024-12-09 16:48:41,453 - telethon.network.mtprotostate - WARNING - Server resent the older message 7446438732686200833, ignoring
+2024-12-09 16:48:42,067 - root - INFO - Listening for messages in channel ID: -1002170038761
+2024-12-09 16:48:42,067 - root - INFO - Telegram client started. Listening for new messages...
+2024-12-09 16:48:59,426 - root - INFO - Received message: Gold sell now
+2024-12-09 16:48:59,427 - root - INFO - Sending prompt to Together API: You are an expert trading assistant specializing in XAUUSD (Gold) trading signals.
+Your role is to analyze trading messages and make informed decisions. IMPORTANT: When a clear trading signal is given (like "Gold buy/sell now"), you should EXECUTE the trade immediately at market price, even if stop loss and take profit levels are not specified.
+
+Current Market Context:
+- Symbol: XAUUSD.sml
+- Current Bid: 2670.765
+- Current Ask: 2670.905
+- Spread: 140.00000000032742
+- Time: 2024-12-09 17:45:40
+
+Account Status:
+- Balance: $99.45
+- Equity: $99.45
+- Free Margin: $99.45
+- Margin Level: 0.0%
+
+Active Trades:
+No active trades.
+
+Recent Message History:
+No message history.
+
+New Message to Analyze:
+"Gold sell now"
+
+Analyze this message carefully and provide:
+1. A detailed analysis of the message intent
+2. Risk assessment considering current market and account conditions
+3. A clear trading decision
+
+IMPORTANT RULES:
+1. For "buy/sell now" messages, ALWAYS execute the trade immediately at market price
+2. If stop loss and take profit are not specified, execute the trade anyway
+3. Default risk management will be applied by the system
+4. Do not ask for clarification on direct trading signals
+
+Return your response in this JSON format:
+{
+    "analysis": "Your step-by-step reasoning about the message",
+    "risk_assessment": "Your evaluation of the risk",
+    "decision": "EXECUTE_TRADE/MODIFY_TRADE/CLOSE_TRADE/SET_BREAKEVEN/NO_ACTION/NEED_CLARIFICATION",
+    "action_params": {
+        "symbol": "XAUUSD.sml",
+        "direction": "buy/sell",
+        "entry": float or null,
+        "stop_loss": float or null,
+        "take_profit": [float] or null,
+        "reason": "Brief explanation of the decision"
+    }
+}
+2024-12-09 16:49:04,414 - root - INFO - Received response from Together API: id='8ef61faa5bd9e201-MRS' object=<ObjectType.ChatCompletion: 'chat.completion'> created=1733759141 model='meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo' choices=[ChatCompletionChoicesData(index=0, logprobs=None, finish_reason=<FinishReason.EOS: 'eos'>, message=ChatCompletionMessage(role=<MessageRole.ASSISTANT: 'assistant'>, content='```\n{\n    "analysis": "The message \'Gold sell now\' is a clear trading signal to sell Gold immediately at the current market price. Since stop loss and take profit levels are not specified, the trade will be executed with default risk management applied by the system.",\n    "risk_assessment": "The current account balance is $99.45 with no active trades, indicating sufficient free margin to open a new trade. However, the margin level is 0.0%, suggesting that the account is not currently leveraged. Selling Gold at the current market price of 2670.905 (Ask) may result in potential losses if the price rises, but the exact risk cannot be determined without stop loss levels.",\n    "decision": "EXECUTE_TRADE",\n    "action_params": {\n        "symbol": "XAUUSD.sml",\n        "direction": "sell",\n        "entry": 2670.905,\n        "stop_loss": null,\n        "take_profit": null,\n        "reason": "Executing \'Gold sell now\' signal at market price"\n    }\n}\n```', tool_calls=[]), seed=15093790268373402000)] prompt=[] usage=UsageData(prompt_tokens=487, completion_tokens=224, total_tokens=711)
+2024-12-09 16:49:04,428 - root - INFO - LLM Analysis: The message 'Gold sell now' is a clear trading signal to sell Gold immediately at the current market price. Since stop loss and take profit levels are not specified, the trade will be executed with default risk management applied by the system.
+2024-12-09 16:49:04,429 - root - INFO - Risk Assessment: The current account balance is $99.45 with no active trades, indicating sufficient free margin to open a new trade. However, the margin level is 0.0%, suggesting that the account is not currently leveraged. Selling Gold at the current market price of 2670.905 (Ask) may result in potential losses if the price rises, but the exact risk cannot be determined without stop loss levels.
+2024-12-09 16:49:04,442 - root - INFO - Symbol XAUUSD.sml filling mode flags: 1
+2024-12-09 16:49:04,442 - root - INFO - Using IOC filling mode for XAUUSD.sml
+2024-12-09 16:49:04,803 - root - INFO - Trade executed successfully: Request executed
+2024-12-09 16:49:04,804 - root - INFO - Successfully opened sell position on XAUUSD.sml
+2024-12-09 16:49:04,804 - root - INFO - Entry: 2670.905, SL: 2680.905, TP: 2650.905
+2024-12-09 16:49:04,804 - root - INFO - Volume: 0.01 lots (1% risk)
+2024-12-09 16:49:04,805 - root - INFO - Risk Assessment: The current account balance is $99.45 with no active trades, indicating sufficient free margin to open a new trade. However, the margin level is 0.0%, suggesting that the account is not currently leveraged. Selling Gold at the current market price of 2670.905 (Ask) may result in potential losses if the price rises, but the exact risk cannot be determined without stop loss levels.
+2024-12-09 17:03:14,567 - GUI - INFO - Shutting down application...
+2024-12-09 17:03:14,575 - root - INFO - Application shutdown complete.
