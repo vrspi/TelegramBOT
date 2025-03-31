@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 import json5
 from services.together_client import TogetherClient
+import MetaTrader5 as mt5
 
 class TradingDecision(Enum):
     EXECUTE_TRADE = "execute_trade"
@@ -31,8 +32,9 @@ class MarketContext:
     time: str
 
 class TradingAgent:
-    def __init__(self, together_client: TogetherClient, max_history: int = 10):
+    def __init__(self, together_client: TogetherClient, mt5_service=None, max_history: int = 10):
         self.together_client = together_client
+        self.mt5_service = mt5_service
         self.message_history: List[Dict] = []
         self.max_history = max_history
         
@@ -115,9 +117,11 @@ Analyze this message carefully and provide:
 
 IMPORTANT RULES:
 1. For "buy/sell now" messages, ALWAYS execute the trade immediately at market price
-2. If stop loss and take profit are not specified, execute the trade anyway
-3. Default risk management will be applied by the system
+2. If stop loss and take profit are not specified, execute the trade anyway with default risk management
+3. Default risk management will be 1% of account balance
 4. Do not ask for clarification on direct trading signals
+5. Be very specific about price levels - provide exact values, not just "above X" or "near Y"
+6. IC Markets may use a different symbol name like XAUUSD.a instead of XAUUSD - be aware
 
 Return your response in this JSON format:
 {{
@@ -125,7 +129,7 @@ Return your response in this JSON format:
     "risk_assessment": "Your evaluation of the risk",
     "decision": "EXECUTE_TRADE/MODIFY_TRADE/CLOSE_TRADE/SET_BREAKEVEN/NO_ACTION/NEED_CLARIFICATION",
     "action_params": {{
-        "symbol": "XAUUSD.sml",
+        "symbol": "XAUUSD",
         "direction": "buy/sell",
         "entry": float or null,
         "stop_loss": float or null,
@@ -149,82 +153,155 @@ Return your response in this JSON format:
             message=message
         )
 
-    async def analyze_and_decide(self, message: str, account_info: AccountInfo, 
-                               market_context: MarketContext, trades: Dict) -> Dict:
-        """Analyze message and make a trading decision."""
+    async def analyze_and_decide(self, message: str, suggested_action=None) -> Dict:
+        """Analyze message and make a trading decision using direct pattern matching."""
         try:
-            # Generate and send prompt to LLM
-            prompt = self.generate_analysis_prompt(message, account_info, market_context, trades)
-            response = self.together_client.chat_completion(prompt)
+            logging.info(f"Analyzing message with direct pattern matching: {message}")
+            lower_msg = message.lower()
             
-            if not response:
-                logging.error("Failed to get LLM response")
-                return self.create_error_decision("Failed to get LLM response")
-
-            # Extract content from response
-            try:
-                content = response.choices[0].message.content
-                if not content:
-                    logging.error("Empty response content from LLM")
-                    return self.create_error_decision("Empty response content from LLM")
-            except (IndexError, AttributeError) as e:
-                logging.error(f"Error extracting content from response: {e}")
-                return self.create_error_decision("Error extracting content from response")
-
-            # Extract JSON from the response
-            try:
-                # First, try to find JSON between triple backticks
-                if '```' in content:
-                    parts = content.split('```')
-                    for part in parts:
-                        # Remove 'json' language identifier if present
-                        if part.startswith('json\n'):
-                            part = part[5:]
-                        # Try to parse this part
-                        try:
-                            parsed_response = json5.loads(part.strip())
-                            if isinstance(parsed_response, dict) and 'analysis' in parsed_response:
-                                break
-                        except:
-                            continue
-                else:
-                    # If no backticks, try to parse the whole content
-                    parsed_response = json5.loads(content)
-            except Exception as e:
-                logging.error(f"Failed to parse LLM response: {e}")
-                logging.debug(f"Raw content: {content}")
-                return self.create_error_decision("Failed to parse LLM response")
-
-            # Validate the parsed response
-            if not isinstance(parsed_response, dict) or 'analysis' not in parsed_response:
-                logging.error("Invalid response format from LLM")
-                return self.create_error_decision("Invalid response format from LLM")
-
-            # Log the analysis for debugging
-            logging.info(f"LLM Analysis: {parsed_response.get('analysis')}")
-            logging.info(f"Risk Assessment: {parsed_response.get('risk_assessment')}")
-
-            # Create decision object
-            try:
-                decision_str = parsed_response.get('decision', 'NO_ACTION')
-                decision = {
-                    "decision": TradingDecision[decision_str.upper()],
-                    "params": parsed_response.get('action_params', {}),
-                    "reasoning": parsed_response.get('analysis', ''),
-                    "risk_assessment": parsed_response.get('risk_assessment', '')
+            # Get market context if available
+            market_context = None
+            if self.mt5_service:
+                try:
+                    market_context = self.mt5_service.get_market_context("XAUUSD")
+                except Exception as e:
+                    logging.error(f"Failed to get market context: {e}")
+            
+            # Emergency direct pattern matching for trading signals
+            decision = None
+            
+            # Detect breakeven command
+            if "break even" in lower_msg or "breakeven" in lower_msg:
+                logging.warning("Using direct pattern matching for breakeven command")
+                return {
+                    "action": "set_breakeven",
+                    "symbol": "XAUUSD",  # Default to gold
+                    "reasoning": "Direct pattern matching detected breakeven command",
+                    "risk_assessment": "Moving stop loss to breakeven to eliminate risk"
                 }
-            except KeyError:
-                logging.error(f"Invalid decision value: {decision_str}")
-                return self.create_error_decision(f"Invalid decision value: {decision_str}")
-
+            
+            # Detect close half command
+            if "close half" in lower_msg or "secure half" in lower_msg or "secure profits" in lower_msg:
+                logging.warning("Using direct pattern matching for close half command")
+                return {
+                    "action": "close_half",
+                    "symbol": "XAUUSD",  # Default to gold
+                    "reasoning": "Direct pattern matching detected close half command",
+                    "risk_assessment": "Securing partial profits while keeping remaining position open"
+                }
+            
+            # Try to detect direct buy signal
+            if ("xauusd buy" in lower_msg or "gold buy" in lower_msg) and ("now" in lower_msg or ":" in lower_msg):
+                action = "buy"
+                entry_price = market_context["ask"] if market_context else None
+                logging.warning("Using direct pattern matching for buy signal")
+            # Try to detect direct sell signal
+            elif ("xauusd sell" in lower_msg or "gold sell" in lower_msg) and ("now" in lower_msg or ":" in lower_msg):
+                action = "sell"
+                entry_price = market_context["bid"] if market_context else None
+                logging.warning("Using direct pattern matching for sell signal")
+            # If suggested action provided, use it
+            elif suggested_action:
+                action = suggested_action
+                entry_price = market_context["ask"] if action == "buy" and market_context else None
+                entry_price = market_context["bid"] if action == "sell" and market_context else None
+            else:
+                # No clear action found
+                return {
+                    "action": "no_action",
+                    "reasoning": "No clear trading signal detected in message",
+                    "risk_assessment": "No risk assessment needed"
+                }
+            
+            # Extract stop loss and take profit from message
+            lines = message.split('\n')
+            import re
+            
+            stop_loss = None
+            take_profit = []
+            
+            # First try to extract price points from the first line
+            price_points = re.findall(r'\d+\.?\d*', lines[0])
+            price_points = [float(p) for p in price_points]
+            
+            # Extract stop loss
+            for line in lines:
+                if "sl" in line.lower() or "stop" in line.lower():
+                    sl_matches = re.findall(r'\d+\.?\d*', line)
+                    if sl_matches:
+                        stop_loss = float(sl_matches[0])
+                        break
+            
+            # Extract take profit levels
+            for line in lines:
+                if "tp" in line.lower() or "target" in line.lower() or "profit" in line.lower():
+                    tp_matches = re.findall(r'\d+\.?\d*', line)
+                    if tp_matches:
+                        for tp in tp_matches:
+                            take_profit.append(float(tp))
+            
+            # Validate stop loss direction
+            if stop_loss and entry_price:
+                if action == "buy" and stop_loss >= entry_price:
+                    logging.warning(f"Invalid SL for BUY: {stop_loss} >= {entry_price}, adjusting to 1% below entry")
+                    stop_loss = round(entry_price * 0.99, 2)  # 1% below entry price
+                elif action == "sell" and stop_loss <= entry_price:
+                    logging.warning(f"Invalid SL for SELL: {stop_loss} <= {entry_price}, adjusting to 1% above entry")
+                    stop_loss = round(entry_price * 1.01, 2)  # 1% above entry price
+            elif entry_price:  # No SL provided, create default
+                if action == "buy":
+                    stop_loss = round(entry_price * 0.99, 2)  # 1% below entry
+                    logging.info(f"No SL provided, using default 1% below entry: {stop_loss}")
+                else:  # sell
+                    stop_loss = round(entry_price * 1.01, 2)  # 1% above entry
+                    logging.info(f"No SL provided, using default 1% above entry: {stop_loss}")
+            
+            # Validate take profit direction
+            if take_profit and entry_price:
+                valid_tps = []
+                for tp in take_profit:
+                    if action == "buy" and tp > entry_price:
+                        valid_tps.append(tp)
+                    elif action == "sell" and tp < entry_price:
+                        valid_tps.append(tp)
+                    else:
+                        logging.warning(f"Invalid TP for {action.upper()}: {tp}, skipping")
+                
+                if not valid_tps and entry_price:  # No valid TPs, create default
+                    if action == "buy":
+                        default_tp = round(entry_price * 1.02, 2)  # 2% above entry
+                        valid_tps.append(default_tp)
+                        logging.info(f"No valid TP provided, using default 2% above entry: {default_tp}")
+                    else:  # sell
+                        default_tp = round(entry_price * 0.98, 2)  # 2% below entry
+                        valid_tps.append(default_tp) 
+                        logging.info(f"No valid TP provided, using default 2% below entry: {default_tp}")
+                
+                take_profit = valid_tps
+            
+            # Build response
+            decision = {
+                "action": action,
+                "symbol": "XAUUSD",
+                "entry_price": entry_price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit if take_profit else None,
+                "reasoning": f"Direct pattern matching detected {action.upper()} signal for Gold/XAUUSD",
+                "risk_assessment": "Standard 1% risk will be applied"
+            }
+            
             # Add to history
             self.add_to_history(message, decision)
-
+            
             return decision
-
+            
         except Exception as e:
             logging.error(f"Error in analyze_and_decide: {e}", exc_info=True)
-            return self.create_error_decision(str(e))
+            return {
+                "action": "no_action",
+                "reasoning": f"Error during analysis: {str(e)}",
+                "risk_assessment": "Error during analysis"
+            }
 
     def create_error_decision(self, error_message: str) -> Dict:
         """Create an error decision object."""
@@ -233,4 +310,237 @@ Return your response in this JSON format:
             "params": {},
             "reasoning": f"Error: {error_message}",
             "risk_assessment": "Unable to assess risk due to error"
-        } 
+        }
+
+    def execute_decision(self, decision):
+        """Execute a trading decision."""
+        try:
+            # Extract decision components
+            action = decision.get("action", "")
+            symbol = decision.get("symbol", "")
+            entry_price = decision.get("entry_price")
+            stop_loss = decision.get("stop_loss")
+            take_profit = decision.get("take_profit")
+            risk_percent = decision.get("risk_percent", 1.0)  # Default to 1%
+            position_size = decision.get("position_size")
+            reasoning = decision.get("reasoning", "No reasoning provided")
+            
+            # Handle breakeven action
+            if action.lower() == "set_breakeven":
+                if not self.mt5_service:
+                    logging.error("MT5 service not available for breakeven operation")
+                    return {"success": False, "message": "MT5 service not available"}
+                
+                # Get all open positions for the given symbol
+                positions = self.mt5_service.get_all_positions()
+                if not positions:
+                    logging.warning(f"No open positions found for setting breakeven")
+                    return {"success": False, "message": "No open positions found"}
+                
+                # Filter positions for the specified symbol
+                symbol_positions = [pos for pos in positions if pos["symbol"] == symbol]
+                if not symbol_positions:
+                    logging.warning(f"No open positions found for {symbol}")
+                    return {"success": False, "message": f"No open positions found for {symbol}"}
+                
+                success_count = 0
+                total_positions = len(symbol_positions)
+                
+                for position in symbol_positions:
+                    # Set SL to entry price (breakeven)
+                    result = self.mt5_service.modify_position(
+                        ticket=position["ticket"],
+                        sl=position["price"]  # Entry price
+                    )
+                    
+                    if result:
+                        logging.info(f"Set position {position['ticket']} to breakeven (SL = {position['price']})")
+                        success_count += 1
+                    else:
+                        logging.error(f"Failed to set position {position['ticket']} to breakeven")
+                
+                if success_count > 0:
+                    return {
+                        "success": True,
+                        "message": f"Set {success_count}/{total_positions} positions to breakeven for {symbol}"
+                    }
+                else:
+                    return {
+                        "success": False, 
+                        "message": f"Failed to set any positions to breakeven for {symbol}"
+                    }
+            
+            # Handle close half action
+            if action.lower() == "close_half":
+                if not self.mt5_service:
+                    logging.error("MT5 service not available for close half operation")
+                    return {"success": False, "message": "MT5 service not available"}
+                
+                # Get all open positions for the given symbol
+                positions = self.mt5_service.get_all_positions()
+                if not positions:
+                    logging.warning(f"No open positions found for closing half")
+                    return {"success": False, "message": "No open positions found"}
+                
+                # Filter positions for the specified symbol
+                symbol_positions = [pos for pos in positions if pos["symbol"] == symbol]
+                if not symbol_positions:
+                    logging.warning(f"No open positions found for {symbol}")
+                    return {"success": False, "message": f"No open positions found for {symbol}"}
+                
+                success_count = 0
+                total_positions = len(symbol_positions)
+                
+                for position in symbol_positions:
+                    # Calculate half volume (minimum 0.01)
+                    half_volume = max(position["volume"] / 2, 0.01)
+                    half_volume = round(half_volume, 2)  # Round to 2 decimal places for lots
+                    
+                    # Only proceed if we can close at least some volume
+                    if half_volume >= 0.01:
+                        # Close half position by ticket
+                        try:
+                            # Check if we're closing exactly half or full position
+                            is_full_close = abs(half_volume - position["volume"]) < 0.001
+                            
+                            if is_full_close:
+                                # If difference is negligible, close the entire position
+                                result = self.mt5_service.close_position(position["ticket"])
+                                logging.info(f"Volume too small to divide, closing entire position {position['ticket']}")
+                            else:
+                                # Partial close with half volume
+                                result = self.mt5_service.close_position(position["ticket"], volume=half_volume)
+                                logging.info(f"Closing {half_volume} lots out of {position['volume']} for position {position['ticket']}")
+                            
+                            if result:
+                                success_count += 1
+                                logging.info(f"Successfully closed half of position {position['ticket']}")
+                            else:
+                                logging.error(f"Failed to close half of position {position['ticket']}")
+                        except Exception as e:
+                            logging.error(f"Error closing half position: {e}")
+                    else:
+                        logging.warning(f"Position {position['ticket']} volume too small to close half ({position['volume']})")
+                
+                if success_count > 0:
+                    return {
+                        "success": True,
+                        "message": f"Closed half of {success_count}/{total_positions} positions for {symbol}"
+                    }
+                else:
+                    return {
+                        "success": False, 
+                        "message": f"Failed to close half of any positions for {symbol}"
+                    }
+                
+            # Check for multiple TP levels
+            multiple_tp_levels = False
+            if isinstance(take_profit, list) and len(take_profit) > 1:
+                multiple_tp_levels = True
+                # For initial order, use the first TP level
+                first_tp = take_profit[0]
+                logging.info(f"Multiple TP levels detected: {take_profit}. Using first TP at {first_tp} for initial order.")
+                take_profit = first_tp
+            
+            # Skip if no action or invalid symbol
+            if not action or not symbol:
+                logging.warning("No action or symbol specified in decision")
+                return {"success": False, "message": "No action or symbol specified"}
+                
+            # Normalize action to buy/sell
+            action = action.lower()
+            if action in ["buy", "long"]:
+                action = "buy"
+            elif action in ["sell", "short"]:
+                action = "sell"
+            else:
+                logging.warning(f"Invalid action: {action}")
+                return {"success": False, "message": f"Invalid action: {action}"}
+            
+            # Get current market data
+            market_context = self.mt5_service.get_market_context(symbol)
+            if not market_context:
+                logging.error(f"Could not get market context for {symbol}")
+                return {"success": False, "message": f"Could not get market context for {symbol}"}
+                
+            # Use current price if entry price is not specified
+            current_price = market_context["ask"] if action == "buy" else market_context["bid"]
+            if entry_price is None:
+                entry_price = current_price
+                logging.info(f"No entry price specified, using current market price: {entry_price}")
+                
+            # Calculate position size if not specified
+            if position_size is None:
+                # Get account info for position sizing
+                account_info = self.mt5_service.get_account_info()
+                if not account_info:
+                    logging.error("Could not get account info for position sizing")
+                    return {"success": False, "message": "Could not get account info for position sizing"}
+                    
+                balance = account_info['balance']
+                if risk_percent <= 0:
+                    risk_percent = 1.0  # Default to 1%
+                    logging.warning(f"Invalid risk percent ({risk_percent}), using default: 1%")
+                    
+                risk_amount = balance * (risk_percent / 100)
+                
+                # Calculate SL pips for position sizing
+                if stop_loss:
+                    sl_points = abs(entry_price - stop_loss)
+                else:
+                    # Default SL to 1% of entry price if not specified
+                    sl_points = entry_price * 0.01
+                    logging.warning(f"No SL specified, using default: {sl_points} points")
+                    
+                # Calculate position size in lots
+                # Formula: Risk amount / (SL points * Value per point)
+                # For XAU/USD, 1 point is typically worth $1 per 0.01 lot
+                value_per_point_per_lot = 1.0  # $1 per 0.01 lot per point for gold
+                position_size = round(risk_amount / (sl_points * value_per_point_per_lot * 100), 2)
+                
+                # Minimum position size 0.01 lots
+                position_size = max(0.01, position_size)
+                logging.info(f"Calculated position size: {position_size} lots with risk amount: ${risk_amount}")
+                
+            # Check margin before executing trade
+            order_type = mt5.ORDER_TYPE_BUY if action == "buy" else mt5.ORDER_TYPE_SELL
+            margin_check = self.mt5_service.check_margin_for_trade(symbol, position_size, order_type)
+            if not margin_check["result"]:
+                logging.error(f"Margin check failed: {margin_check['message']}")
+                return {"success": False, "message": margin_check["message"]}
+                
+            logging.info(f"Margin check passed: {margin_check['message']}")
+            
+            # Execute the trade
+            logging.info(f"Attempting to execute {action} trade on {symbol}")
+            logging.info(f"Entry: {entry_price}, SL: {stop_loss}, TP: {take_profit}")
+            
+            result = self.mt5_service.open_position(
+                symbol=symbol,
+                order_type=action,
+                volume=position_size,
+                price=entry_price,
+                sl=stop_loss,
+                tp=take_profit
+            )
+            
+            if not result:
+                logging.error("Failed to open position")
+                return {"success": False, "message": f"Could not execute {action} {symbol}"}
+                
+            # Log success and multiple TP information if applicable
+            if multiple_tp_levels:
+                logging.info(f"Trade executed with first TP level. Additional TP levels: {decision.get('take_profit')[1:]} should be managed manually.")
+                result["message"] = f"Position opened with SL at {stop_loss}, first TP at {take_profit}. Additional TP levels detected and should be managed manually."
+            else:
+                result["message"] = f"Successfully executed {action} {symbol} at {entry_price} with SL at {stop_loss}" + (f", TP at {take_profit}" if take_profit else "")
+                
+            result["success"] = True
+            logging.info(f"Trade executed: {result['message']}")
+            logging.info(f"Trade reasoning: {reasoning}")
+            
+            return result
+            
+        except Exception as e:
+            logging.error(f"Error executing decision: {e}", exc_info=True)
+            return {"success": False, "message": f"Error executing decision: {str(e)}"} 
