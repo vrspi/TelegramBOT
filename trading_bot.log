@@ -1912,3 +1912,60 @@ Return your response in this JSON format:
 2024-12-09 16:49:04,805 - root - INFO - Risk Assessment: The current account balance is $99.45 with no active trades, indicating sufficient free margin to open a new trade. However, the margin level is 0.0%, suggesting that the account is not currently leveraged. Selling Gold at the current market price of 2670.905 (Ask) may result in potential losses if the price rises, but the exact risk cannot be determined without stop loss levels.
 2024-12-09 17:03:14,567 - GUI - INFO - Shutting down application...
 2024-12-09 17:03:14,575 - root - INFO - Application shutdown complete.
+2025-05-23 00:32:58,251 - root - INFO - Starting Trading Bot application...
+2025-05-23 00:33:21,500 - root - INFO - Connected to account: 52244882 (ICMarketsSC-Demo)
+2025-05-23 00:33:21,501 - root - INFO - Account balance: 146.11, Leverage: 1:100
+2025-05-23 00:33:21,501 - root - INFO - Trade allowed: True
+2025-05-23 00:33:21,502 - root - INFO - Found working gold symbol: XAUUSD
+2025-05-23 00:33:21,502 - root - INFO - Symbol properties: spread=41, digits=2
+2025-05-23 00:33:21,502 - root - INFO - Symbol trade mode: 4
+2025-05-23 00:33:21,502 - root - INFO - Symbol filling modes: 2
+2025-05-23 00:33:21,503 - root - INFO - Symbol stop level: 0 points
+2025-05-23 00:33:21,503 - root - INFO - Current XAUUSD price: bid=3237.53, ask=3237.94
+2025-05-23 00:33:21,517 - root - INFO - Connected to account: 52244882 (ICMarketsSC-Demo)
+2025-05-23 00:33:21,518 - root - INFO - Account balance: 146.11, Leverage: 1:100
+2025-05-23 00:33:21,518 - root - INFO - Trade allowed: True
+2025-05-23 00:33:22,474 - telethon.network.mtprotosender - INFO - Connecting to 149.154.167.91:443/TcpFull...
+2025-05-23 00:33:22,566 - telethon.network.mtprotosender - INFO - Connection to 149.154.167.91:443/TcpFull complete!
+2025-05-23 00:33:22,888 - root - ERROR - Unexpected error in run method: The authorization key (session file) was used under two different IP addresses simultaneously, and can no longer be used. Use the same session exclusively, or use different sessions (caused by InvokeWithLayerRequest(InitConnectionRequest(GetConfigRequest)))
+Traceback (most recent call last):
+  File "D:\TelegramBOT\bot\telegram_client_handler.py", line 82, in run
+    await self.start_client()
+  File "D:\TelegramBOT\bot\telegram_client_handler.py", line 94, in start_client
+    await self.client.start(phone=self.phone_number)
+  File "D:\TelegramBOT\venv_py310\lib\site-packages\telethon\client\auth.py", line 135, in _start
+    await self.connect()
+  File "D:\TelegramBOT\venv_py310\lib\site-packages\telethon\client\telegrambaseclient.py", line 596, in connect
+    await self._sender.send(functions.InvokeWithLayerRequest(LAYER, req))
+telethon.errors.rpcerrorlist.AuthKeyDuplicatedError: The authorization key (session file) was used under two different IP addresses simultaneously, and can no longer be used. Use the same session exclusively, or use different sessions (caused by InvokeWithLayerRequest(InitConnectionRequest(GetConfigRequest)))
+2025-05-23 00:33:28,205 - GUI - INFO - Starting bot...
+2025-05-23 00:33:46,453 - GUI - INFO - Shutting down application...
+2025-05-23 00:33:46,466 - root - INFO - Application shutdown complete.
+2025-05-23 00:33:51,782 - root - INFO - Starting Trading Bot application...
+2025-05-23 00:33:51,806 - root - INFO - Connected to account: 52244882 (ICMarketsSC-Demo)
+2025-05-23 00:33:51,807 - root - INFO - Account balance: 146.11, Leverage: 1:100
+2025-05-23 00:33:51,807 - root - INFO - Trade allowed: True
+2025-05-23 00:33:51,808 - root - INFO - Found working gold symbol: XAUUSD
+2025-05-23 00:33:51,810 - root - INFO - Symbol properties: spread=12, digits=2
+2025-05-23 00:33:51,811 - root - INFO - Symbol trade mode: 4
+2025-05-23 00:33:51,811 - root - INFO - Symbol filling modes: 2
+2025-05-23 00:33:51,812 - root - INFO - Symbol stop level: 0 points
+2025-05-23 00:33:51,812 - root - INFO - Current XAUUSD price: bid=3306.61, ask=3306.73
+2025-05-23 00:33:51,822 - root - INFO - Connected to account: 52244882 (ICMarketsSC-Demo)
+2025-05-23 00:33:51,823 - root - INFO - Account balance: 146.11, Leverage: 1:100
+2025-05-23 00:33:51,823 - root - INFO - Trade allowed: True
+2025-05-23 00:33:51,982 - telethon.network.mtprotosender - INFO - Connecting to 149.154.167.91:443/TcpFull...
+2025-05-23 00:33:52,067 - telethon.network.mtprotosender - INFO - Connection to 149.154.167.91:443/TcpFull complete!
+2025-05-23 00:33:52,450 - root - ERROR - Unexpected error in run method: The authorization key (session file) was used under two different IP addresses simultaneously, and can no longer be used. Use the same session exclusively, or use different sessions (caused by InvokeWithLayerRequest(InitConnectionRequest(GetConfigRequest)))
+Traceback (most recent call last):
+  File "D:\TelegramBOT\bot\telegram_client_handler.py", line 82, in run
+    await self.start_client()
+  File "D:\TelegramBOT\bot\telegram_client_handler.py", line 94, in start_client
+    await self.client.start(phone=self.phone_number)
+  File "D:\TelegramBOT\venv_py310\lib\site-packages\telethon\client\auth.py", line 135, in _start
+    await self.connect()
+  File "D:\TelegramBOT\venv_py310\lib\site-packages\telethon\client\telegrambaseclient.py", line 596, in connect
+    await self._sender.send(functions.InvokeWithLayerRequest(LAYER, req))
+telethon.errors.rpcerrorlist.AuthKeyDuplicatedError: The authorization key (session file) was used under two different IP addresses simultaneously, and can no longer be used. Use the same session exclusively, or use different sessions (caused by InvokeWithLayerRequest(InitConnectionRequest(GetConfigRequest)))
+2025-05-23 00:33:59,774 - GUI - INFO - Shutting down application...
+2025-05-23 00:33:59,785 - root - INFO - Application shutdown complete.
