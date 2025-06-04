@@ -2,6 +2,7 @@ import MetaTrader5 as mt5
 import logging
 from datetime import datetime
 from typing import Dict, Optional, List, Any
+import pandas as pd
 
 class MT5Service:
     TRADE_RETCODE_DONE = 10009
@@ -51,6 +52,19 @@ class MT5Service:
             "volume": last_tick.volume,
             "time": datetime.fromtimestamp(last_tick.time).strftime("%Y-%m-%d %H:%M:%S")
         }
+
+    def get_rates(self, symbol: str, timeframe: int, num_bars: int):
+        """Retrieve recent price bars for a symbol."""
+        if not mt5.initialize():
+            logging.error("Failed to initialize MT5")
+            return []
+
+        rates = mt5.copy_rates_from_pos(symbol, timeframe, 0, num_bars)
+        if rates is None:
+            logging.error(f"Failed to copy rates for {symbol}")
+            return []
+
+        return pd.DataFrame(rates)
         
     def open_position(self, symbol: str, order_type: str, volume: float,
                      price: Optional[float] = None, sl: Optional[float] = None,
