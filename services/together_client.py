@@ -7,42 +7,49 @@ from typing import Optional, Any
 class TogetherClient:
     def __init__(self, api_key: str):
         """Initialize the Together AI client."""
-        os.environ['TOGETHER_API_KEY'] = api_key
+        os.environ["TOGETHER_API_KEY"] = api_key
         self.client = Together(api_key=api_key)
         self.model = "meta-llama/Meta-Llama-3.1-405B-Instruct-Turbo"
         self.fallback_model = "meta-llama/Llama-3.1-70B-Instruct"
         self.max_retries = 3
         self.retry_delay = 2  # seconds
         
-    def chat_completion(self, prompt: str) -> Optional[Any]:
-        """Send a chat completion request to Together AI with retry logic."""
-        # Log prompt without sensitive Unicode characters
-        safe_prompt = prompt.encode('ascii', errors='replace').decode()
-        logging.info(f"Sending prompt to Together API: {safe_prompt[:200]}...")
-        
-        # First try with primary model
-        response = self._attempt_completion(prompt, self.model)
-        
-        # If primary model fails, try fallback model
-        if not response:
-            logging.warning(f"Primary model {self.model} failed, trying fallback model {self.fallback_model}")
-            response = self._attempt_completion(prompt, self.fallback_model)
-            
-        return response
+    def chat_completion(self, messages: list, tools: Optional[list] = None, tool_choice: str = "auto") -> Optional[Any]:
+        """Send a chat completion request to Together AI with optional function calling."""
+        try:
+            # Log a truncated version of the last user message for debugging
+            if messages:
+                last = messages[-1].get("content", "")
+                safe_prompt = str(last).encode("ascii", errors="replace").decode()
+                logging.info(f"Sending prompt to Together API: {safe_prompt[:200]}...")
+
+            # First try with primary model
+            response = self._attempt_completion(messages, self.model, tools, tool_choice)
+
+            # If primary model fails, try fallback model
+            if not response:
+                logging.warning(
+                    f"Primary model {self.model} failed, trying fallback model {self.fallback_model}"
+                )
+                response = self._attempt_completion(messages, self.fallback_model, tools, tool_choice)
+
+            return response
+        except Exception as e:
+            logging.error(f"Error preparing Together API call: {e}")
+            return None
     
-    def _attempt_completion(self, prompt: str, model: str) -> Optional[Any]:
+    def _attempt_completion(self, messages: list, model: str, tools: Optional[list], tool_choice: str) -> Optional[Any]:
         """Make API call with retries."""
         for attempt in range(self.max_retries):
             try:
                 # Make the API call using the chat completions endpoint
                 response = self.client.chat.completions.create(
                     model=model,
-                    messages=[
-                        {"role": "system", "content": "You are an expert trading assistant specializing in XAUUSD (Gold) trading signals."},
-                        {"role": "user", "content": prompt}
-                    ],
+                    messages=messages,
                     temperature=0.3,  # Lower temperature for more focused responses
-                    max_tokens=1024
+                    max_tokens=1024,
+                    tools=tools,
+                    tool_choice=tool_choice,
                 )
                 
                 # Log a truncated version of the response

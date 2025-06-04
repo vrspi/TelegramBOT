@@ -154,177 +154,117 @@ Return your response in this JSON format:
         )
 
     async def analyze_and_decide(self, message: str, suggested_action=None) -> Dict:
-        """Analyze message and make a trading decision using direct pattern matching."""
+        """Analyze a message and return a trading decision."""
         try:
-            logging.info(f"Analyzing message with direct pattern matching: {message}")
+            logging.info(f"Analyzing message: {message}")
+
             lower_msg = message.lower()
-            
-            # Get market context if available
-            market_context = None
-            if self.mt5_service:
-                try:
-                    market_context = self.mt5_service.get_market_context("XAUUSD")
-                except Exception as e:
-                    logging.error(f"Failed to get market context: {e}")
-            
-            # Emergency direct pattern matching for trading signals
-            decision = None
-            
-            # Detect breakeven command
+
+            # Quick pattern matching for urgent commands
             if "break even" in lower_msg or "breakeven" in lower_msg:
-                logging.warning("Using direct pattern matching for breakeven command")
                 return {
                     "action": "set_breakeven",
-                    "symbol": "XAUUSD",  # Default to gold
-                    "reasoning": "Direct pattern matching detected breakeven command",
-                    "risk_assessment": "Moving stop loss to breakeven to eliminate risk"
+                    "symbol": "XAUUSD",
+                    "reasoning": "Direct pattern detected breakeven command",
+                    "risk_assessment": "Move stop loss to entry",
                 }
-            
-            # Detect close half command
+
             if "close half" in lower_msg or "secure half" in lower_msg or "secure profits" in lower_msg:
-                logging.warning("Using direct pattern matching for close half command")
                 return {
                     "action": "close_half",
-                    "symbol": "XAUUSD",  # Default to gold
-                    "reasoning": "Direct pattern matching detected close half command",
-                    "risk_assessment": "Securing partial profits while keeping remaining position open"
+                    "symbol": "XAUUSD",
+                    "reasoning": "Direct pattern detected close half command",
+                    "risk_assessment": "Secure partial profits",
                 }
-            
-            # Try to detect direct buy signal
-            if ("xauusd buy" in lower_msg or "gold buy" in lower_msg) and ("now" in lower_msg or ":" in lower_msg):
-                action = "buy"
-                entry_price = market_context["ask"] if market_context else None
-                logging.warning("Using direct pattern matching for buy signal")
-            # Try to detect direct sell signal
-            elif ("xauusd sell" in lower_msg or "gold sell" in lower_msg) and ("now" in lower_msg or ":" in lower_msg):
-                action = "sell"
-                entry_price = market_context["bid"] if market_context else None
-                logging.warning("Using direct pattern matching for sell signal")
-            # If suggested action provided, use it
-            elif suggested_action:
-                action = suggested_action
-                entry_price = market_context["ask"] if action == "buy" and market_context else None
-                entry_price = market_context["bid"] if action == "sell" and market_context else None
-            else:
-                # No clear action found
-                return {
-                    "action": "no_action",
-                    "reasoning": "No clear trading signal detected in message",
-                    "risk_assessment": "No risk assessment needed"
-                }
-            
-            # Extract stop loss and take profit from message
-            lines = message.split('\n')
-            import re
-            
-            stop_loss = None
-            raw_take_profit_values = [] # To store all TPs found before validation/selection
-            
-            # First try to extract price points from the first line
-            price_points = re.findall(r'\d+\.?\d*', lines[0])
-            price_points = [float(p) for p in price_points]
-            
-            # Extract stop loss
-            for line in lines:
-                if "sl" in line.lower() or "stop" in line.lower():
-                    sl_matches = re.findall(r'\d+\.?\d*', line)
-                    if sl_matches:
-                        stop_loss = float(sl_matches[0])
-                        break
-            
-            # Extract take profit levels
-            for line in lines:
-                if "tp" in line.lower() or "target" in line.lower() or "profit" in line.lower():
-                    tp_matches = re.findall(r'\d+\.?\d*', line)
-                    if tp_matches:
-                        for tp_str in tp_matches:
-                            try:
-                                raw_take_profit_values.append(float(tp_str))
-                            except ValueError:
-                                logging.warning(f"Could not convert TP value '{tp_str}' to float.")
-            
-            # Keep a copy of all TPs found before filtering and selection for logging purposes
-            original_tps_from_signal = list(raw_take_profit_values) # Make a copy
-            take_profit = list(raw_take_profit_values) # Work with a copy for filtering
-            
-            # Validate stop loss direction
-            if stop_loss and entry_price:
-                if action == "buy" and stop_loss >= entry_price:
-                    logging.warning(f"Invalid SL for BUY: {stop_loss} >= {entry_price}, adjusting to 1% below entry")
-                    stop_loss = round(entry_price * 0.99, 2)  # 1% below entry price
-                elif action == "sell" and stop_loss <= entry_price:
-                    logging.warning(f"Invalid SL for SELL: {stop_loss} <= {entry_price}, adjusting to 1% above entry")
-                    stop_loss = round(entry_price * 1.01, 2)  # 1% above entry price
-            elif entry_price:  # No SL provided, create default
-                if action == "buy":
-                    stop_loss = round(entry_price * 0.99, 2)  # 1% below entry
-                    logging.info(f"No SL provided, using default 1% below entry: {stop_loss}")
-                else:  # sell
-                    stop_loss = round(entry_price * 1.01, 2)  # 1% above entry
-                    logging.info(f"No SL provided, using default 1% above entry: {stop_loss}")
-            
-            # Validate take profit direction
-            if take_profit and entry_price:
-                valid_tps = []
-                for tp in take_profit:
-                    if action == "buy" and tp > entry_price:
-                        valid_tps.append(tp)
-                    elif action == "sell" and tp < entry_price:
-                        valid_tps.append(tp)
-                    else:
-                        logging.warning(f"Invalid TP for {action.upper()}: {tp}, skipping")
-                
-                if not valid_tps and entry_price:  # No valid TPs, create default
-                    if action == "buy":
-                        default_tp = round(entry_price * 1.02, 2)  # 2% above entry
-                        valid_tps.append(default_tp)
-                        logging.info(f"No valid TP provided, using default 2% above entry: {default_tp}")
-                    else:  # sell
-                        default_tp = round(entry_price * 0.98, 2)  # 2% below entry
-                        valid_tps.append(default_tp) 
-                        logging.info(f"No valid TP provided, using default 2% below entry: {default_tp}")
-                
-                # If multiple valid TPs, select the most aggressive one
-                if len(valid_tps) > 1:
-                    if action == "buy":
-                        take_profit = [max(valid_tps)] # Largest TP for buy
-                        logging.info(f"Multiple valid TPs for BUY, selected most aggressive: {take_profit[0]}")
-                    elif action == "sell":
-                        take_profit = [min(valid_tps)] # Smallest TP for sell
-                        logging.info(f"Multiple valid TPs for SELL, selected most aggressive: {take_profit[0]}")
-                elif len(valid_tps) == 1:
-                    take_profit = valid_tps
-                else: # No valid TPs found after filtering, or original take_profit was empty
-                    take_profit = [] # Ensure it's an empty list not None, if no TPs
 
-            # Ensure take_profit is a list for consistency, even if it's empty or has one element
-            if not isinstance(take_profit, list):
-                if take_profit is not None: # If it's a single valid TP value from default logic
-                    take_profit = [take_profit]
-                else:
-                    take_profit = []
-            
-            # Build response
-            decision = {
-                "action": action,
-                "symbol": "XAUUSD",
-                "entry_price": entry_price,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,  # This is now a list with the single most aggressive TP or empty
-                "original_take_profit_list": original_tps_from_signal, # Full list of TPs from signal
-                "reasoning": f"Direct pattern matching for {action} signal",
-                "risk_assessment": "Risk managed by SL/TP levels"
-            }
-            
-            logging.info(f"Direct pattern matching decision: {decision}")
-            return decision
-            
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "open_trade",
+                        "description": "Open a new XAUUSD trade",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "direction": {"type": "string", "enum": ["buy", "sell"]},
+                                "entry": {"type": "number"},
+                                "stop_loss": {"type": "number"},
+                                "take_profit": {"type": "array", "items": {"type": "number"}},
+                            },
+                            "required": ["direction"],
+                        },
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "close_half",
+                        "description": "Close half of the current XAUUSD position",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "set_breakeven",
+                        "description": "Move stop loss to entry price for current trade",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                },
+            ]
+
+            messages = [
+                {"role": "system", "content": "You are an expert trading assistant."},
+                {"role": "user", "content": message},
+            ]
+
+            decision = None
+            if self.together_client:
+                response = self.together_client.chat_completion(messages, tools=tools)
+                if response and hasattr(response, "choices") and response.choices:
+                    tool_calls = getattr(response.choices[0].message, "tool_calls", None)
+                    if tool_calls:
+                        call = tool_calls[0]
+                        try:
+                            args = json5.loads(call.function.arguments)
+                        except Exception:
+                            args = {}
+                        if call.function.name == "open_trade":
+                            decision = {
+                                "action": args.get("direction"),
+                                "symbol": "XAUUSD",
+                                "entry_price": args.get("entry"),
+                                "stop_loss": args.get("stop_loss"),
+                                "take_profit": args.get("take_profit", []),
+                                "reasoning": "LLM function call open_trade",
+                                "risk_assessment": "AI generated",
+                            }
+                        elif call.function.name == "close_half":
+                            decision = {
+                                "action": "close_half",
+                                "symbol": "XAUUSD",
+                                "reasoning": "LLM requested close_half",
+                                "risk_assessment": "AI generated",
+                            }
+                        elif call.function.name == "set_breakeven":
+                            decision = {
+                                "action": "set_breakeven",
+                                "symbol": "XAUUSD",
+                                "reasoning": "LLM requested set_breakeven",
+                                "risk_assessment": "AI generated",
+                            }
+
+            if decision:
+                self.add_to_history(message, decision)
+                return decision
+
+            logging.info("LLM did not return a valid tool call, using regex fallback")
         except Exception as e:
             logging.error(f"Error in analyze_and_decide: {e}", exc_info=True)
             return {
                 "action": "no_action",
                 "reasoning": f"Error during analysis: {str(e)}",
-                "risk_assessment": "Error during analysis"
+                "risk_assessment": "Error during analysis",
             }
 
     def create_error_decision(self, error_message: str) -> Dict:
@@ -546,9 +486,11 @@ Return your response in this JSON format:
                 
             logging.info(f"Margin check passed: {margin_check['message']}")
             
-            # Re-assign take_profit to the single selected TP for the order
-            # The original list of TPs is still in decision.get('take_profit')
-            take_profit_for_order = selected_tp_for_order
+            # `take_profit` already contains the single most aggressive level
+            # chosen in `analyze_and_decide`. Use it directly when sending the
+            # order to MT5. The original list of TPs remains available in
+            # `decision['take_profit']` if further processing is required.
+            take_profit_for_order = take_profit
             
             # Skip if no action or invalid symbol
             if not action or not symbol:
