@@ -486,9 +486,11 @@ Return your response in this JSON format:
                 
             logging.info(f"Margin check passed: {margin_check['message']}")
             
-            # Re-assign take_profit to the single selected TP for the order
-            # The original list of TPs is still in decision.get('take_profit')
-            take_profit_for_order = selected_tp_for_order
+            # `take_profit` already contains the single most aggressive level
+            # chosen in `analyze_and_decide`. Use it directly when sending the
+            # order to MT5. The original list of TPs remains available in
+            # `decision['take_profit']` if further processing is required.
+            take_profit_for_order = take_profit
             
             # Skip if no action or invalid symbol
             if not action or not symbol:
