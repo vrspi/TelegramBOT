@@ -8,4 +8,5 @@ PySide6_Essentials==6.7.2
 python-dotenv==1.0.1
 python-telegram-bot==21.4
 Telethon==1.36.0
+pandas==1.5.3
 together==1.2.7
