@@ -6,12 +6,17 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 import logging
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QSplashScreen
+from PySide6.QtGui import QPixmap
+from PySide6.QtCore import Qt
+from pathlib import Path
 from services.mt5_service import MT5Service
 from services.together_client import TogetherClient
 from bot.telegram_client_handler import TelegramClientHandler
 from config.config import load_config
 from gui.main_app import MainApp
+from services.api_server import APIServer
+from services.frontend_server import FrontendServer
 from dotenv import load_dotenv
 
 def setup_logging():
@@ -78,30 +83,49 @@ def main():
     setup_logging()
     logging.info("Starting Trading Bot application...")
 
+    # Create the Qt application and splash screen
+    app = QApplication(sys.argv)
+    pixmap = QPixmap(400, 300)
+    pixmap.fill(Qt.darkGray)
+    splash = QSplashScreen(pixmap)
+    splash.showMessage("Initializing...", Qt.AlignBottom | Qt.AlignCenter, Qt.white)
+    splash.show()
+    app.processEvents()
+
     # Load environment variables and configuration
     load_dotenv()
     config = load_config()
     if not config:
         logging.error("Failed to load configuration. Please check your config files.")
+        splash.finish(None)
         return
 
     # Initialize services
     mt5_service, together_client, telegram_handler = initialize_services(config)
     if not all([mt5_service, together_client, telegram_handler]):
         logging.error("Failed to initialize one or more required services. Exiting...")
+        splash.finish(None)
         return
 
-    try:
-        # Create and start the PySide6 application
-        app = QApplication(sys.argv)
-        main_window = MainApp()
-        main_window.show()
+    # Start backend API server
+    api_server = APIServer(mt5_service=mt5_service)
+    api_server.start()
 
-        # Connect logging signals
-        telegram_handler.log_signal.connect(main_window.log_message)
+    # Start Next.js frontend
+    frontend_dir = Path(project_root) / "frontend"
+    frontend_server = FrontendServer(frontend_dir)
+    frontend_server.start()
+
+    try:
+        main_window = MainApp(frontend_server=frontend_server, api_server=api_server)
+        splash.showMessage("Starting application...", Qt.AlignBottom | Qt.AlignCenter, Qt.white)
+        app.processEvents()
 
         # Start the Telegram client handler
         telegram_handler.start()
+
+        splash.finish(main_window)
+        main_window.show()
 
         # Start the application event loop
         sys.exit(app.exec())
